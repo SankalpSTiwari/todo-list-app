@@ -17,6 +17,8 @@ let todos = loadTodos();
 let currentFilter = 'all';
 let currentPriorityFilter = 'all';
 let searchQuery = '';
+let draggedElement = null;
+let draggedIndex = null;
 
 todoForm.addEventListener('submit', handleAddTodo);
 clearCompletedButton.addEventListener('click', handleClearCompleted);
@@ -34,8 +36,18 @@ searchInput.addEventListener('input', handleSearch);
 
 todoItemsList.addEventListener('click', handleItemAction);
 todoItemsList.addEventListener('change', handleToggleCompleted);
+todoItemsList.addEventListener('dragstart', handleDragStart);
+todoItemsList.addEventListener('dragover', handleDragOver);
+todoItemsList.addEventListener('dragenter', handleDragEnter);
+todoItemsList.addEventListener('drop', handleDrop);
+todoItemsList.addEventListener('dragend', handleDragEnd);
 
 render();
+
+// Test drag functionality
+console.log(
+  'Todo app loaded. Try dragging items by the drag handle (6-dot icon)'
+);
 
 function handleAddTodo(event) {
   event.preventDefault();
@@ -54,6 +66,7 @@ function handleAddTodo(event) {
     dueDate: todoDueDateInput.value || null,
     priority: todoPrioritySelect.value,
     category: todoCategorySelect.value,
+    order: todos.length, // Add order property for custom sorting
   };
 
   todos = [newTodo, ...todos];
@@ -71,6 +84,12 @@ function handleItemAction(event) {
   const itemElement = target.closest('.todo-item');
 
   if (!itemElement) return;
+
+  // Don't trigger actions when clicking on drag handle
+  if (target.closest('.drag-handle')) {
+    return;
+  }
+
   const id = itemElement.dataset.id;
 
   if (target.classList.contains('todo-delete')) {
@@ -277,8 +296,14 @@ function getFilteredTodos() {
     );
   }
 
-  // Sort by priority (high -> medium -> low) and then by due date
+  // Sort by custom order first, then by priority and due date
   return filtered.sort((a, b) => {
+    // First sort by custom order (if exists)
+    if (a.order !== undefined && b.order !== undefined) {
+      return a.order - b.order;
+    }
+
+    // Fallback to priority and date sorting for items without order
     const priorityOrder = { high: 3, medium: 2, low: 1 };
 
     // First sort by completion (incomplete first)
@@ -337,4 +362,154 @@ function loadTodos() {
     console.error('Failed to parse stored todos', error);
     return [];
   }
+}
+
+// Drag and Drop Functions
+function handleDragStart(event) {
+  const todoItem = event.target.closest('.todo-item');
+  if (!todoItem) return;
+
+  console.log('Drag start:', todoItem.dataset.id);
+
+  draggedElement = todoItem;
+  draggedIndex = Array.from(todoItemsList.children).indexOf(todoItem);
+
+  todoItem.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', todoItem.dataset.id);
+
+  // Store the todo ID for later use
+  event.dataTransfer.setData(
+    'application/json',
+    JSON.stringify({
+      todoId: todoItem.dataset.id,
+      fromIndex: draggedIndex,
+    })
+  );
+}
+
+function handleDragOver(event) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+
+  const afterElement = getDragAfterElement(todoItemsList, event.clientY);
+  const dragging = document.querySelector('.dragging');
+
+  if (!dragging) return;
+
+  if (afterElement == null) {
+    todoItemsList.appendChild(dragging);
+  } else {
+    todoItemsList.insertBefore(dragging, afterElement);
+  }
+}
+
+function handleDragEnter(event) {
+  event.preventDefault();
+}
+
+function handleDrop(event) {
+  event.preventDefault();
+  console.log('Drop event triggered');
+
+  try {
+    // Get the drag data
+    const dragData = JSON.parse(event.dataTransfer.getData('application/json'));
+    const draggedTodoId = dragData.todoId;
+    const fromIndex = dragData.fromIndex;
+
+    console.log('Dropped todo:', draggedTodoId, 'from index:', fromIndex);
+
+    // Find the drop target
+    const dropTarget = event.target.closest('.todo-item');
+    if (!dropTarget) {
+      console.log('No valid drop target');
+      return;
+    }
+
+    const toIndex = Array.from(todoItemsList.children).indexOf(dropTarget);
+    console.log('Drop target index:', toIndex);
+
+    if (fromIndex === toIndex) {
+      console.log('Same position, no change needed');
+      return;
+    }
+
+    // Find the actual todos in the main array
+    const draggedTodoIndex = todos.findIndex(
+      (todo) => todo.id === draggedTodoId
+    );
+    const targetTodoIndex = todos.findIndex(
+      (todo) => todo.id === dropTarget.dataset.id
+    );
+
+    if (draggedTodoIndex === -1 || targetTodoIndex === -1) {
+      console.log('Could not find todos in main array');
+      return;
+    }
+
+    console.log('Moving from', draggedTodoIndex, 'to', targetTodoIndex);
+
+    // Get current DOM order (what user sees)
+    const currentOrder = Array.from(todoItemsList.children).map(
+      (item) => item.dataset.id
+    );
+    console.log('Current DOM order:', currentOrder);
+
+    // Update the todos array to match the DOM order
+    const reorderedTodos = [];
+    currentOrder.forEach((todoId) => {
+      const todo = todos.find((t) => t.id === todoId);
+      if (todo) {
+        reorderedTodos.push(todo);
+      }
+    });
+
+    // Update order property for all todos
+    reorderedTodos.forEach((todo, index) => {
+      todo.order = index;
+    });
+
+    // Replace the todos array
+    todos = reorderedTodos;
+
+    console.log(
+      'New order:',
+      todos.map((t) => t.text)
+    );
+    saveTodos();
+    render();
+  } catch (error) {
+    console.error('Error in drop handler:', error);
+  }
+}
+
+function handleDragEnd(event) {
+  const todoItem = event.target.closest('.todo-item');
+  if (todoItem) {
+    todoItem.classList.remove('dragging');
+  }
+
+  draggedElement = null;
+  draggedIndex = null;
+}
+
+function getDragAfterElement(container, y) {
+  const draggableElements = [
+    ...container.querySelectorAll('.todo-item:not(.dragging)'),
+  ];
+
+  return draggableElements.reduce(
+    (closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+
+      if (offset < 0 && offset > closest.offset) {
+        return { offset: offset, element: child };
+      } else {
+        return closest;
+      }
+    },
+    { offset: Number.NEGATIVE_INFINITY }
+  ).element;
 }
